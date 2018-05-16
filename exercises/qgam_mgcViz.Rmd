@@ -97,16 +97,14 @@ The output of `mqgamV` is a list of QGAM models, you can handle each of them as 
 ```{r age7, message = F}
 summary(fitQ[[1]])
 ```
-```{r age8, message = F}
-summary(fitQ[[1]])
-```
+
 
 An additive example with four covariates
 =======================
 
 We simulate some data from the model:
 $$
-y \sim f_0(x_0)+f_1(x_1)+f_2(x_2)+f_3(x_3)+e,\;\;\; e \sim N(0, 2)
+y = f_0(x_0)+f_1(x_1)+f_2(x_2)+f_3(x_3)+e,\;\;\; e \sim N(0, 2)
 $$
 by doing
 ```{r fourD1, message = F}
@@ -228,7 +226,7 @@ plotDiff(s1, s2) + l_ciPoly() + l_fitLine()
 ```
 There might be something there, but the difference is not very strong.
 
-Now that we have converges on a (hopefully reasonable) model, we can fit it to several quantiles:
+Now that we have converged on a (hopefully reasonable) model, we can fit it to several quantiles:
 ```{r lex6, message = F}
 fit5 <- mqgamV(RT0 ~ s(Trial, by = NativeLanguage) + NativeLanguage + s(Length, k = 5) +
                 + s(Frequency) + s(Subject, bs = "re") + s(Word, bs = "re"),
@@ -317,7 +315,7 @@ In summary, practical experience suggests that:
    - same if the text printed by `check(fit)` does not say that `full convergence` was achieved;
    - you can estimate the bias using `check(fit)`;
    - if you have to increase `err` to 0.2 or higher, there might be something wrong with your model;
-   - you might messages saying that `outer Newton did not converge fully` during estimation. This might
+   - you might get messages saying that `outer Newton did not converge fully` during estimation. This might
      not be problematic as long as the calibration loss is smooth and `full convergence` was achieved;
    - in preliminary studies do not decrease `err` too much, as it slows down computation;
    - setting `err` too low is not a good idea: it is much better to have some bias than 
@@ -327,7 +325,7 @@ In summary, practical experience suggests that:
 Rainfall modelling in Parana state of Brasil
 =======================
 
-Here we are going to model daily rainfall (mm/day) from over 600 weather station in the Parana state of Brazil.
+Here we are going to model weekly rainfall (mm/week) from over 600 weather station in the Parana state of Brazil.
 The data comes comes from the `INLA` R package. The meaning of most variables should be evident.
 ```{r parana1, message = F}
 library(mgcViz)
