@@ -1,0 +1,768 @@
+---
+title: "Quantile additive models using qgam and mgcViz"
+date: '`r format(Sys.Date(), "%B %d %Y")`'
+author: "Matteo Fasiolo and Raphael Nedellec"
+vignette: >
+    %\VignetteEngine{knitr::rmarkdown}
+    %\VignetteIndexEntry{quantile_mgcViz}
+    %\VignetteEncoding{UTF-8}
+---
+  
+```{r setup, include=FALSE}
+library(knitr)
+opts_chunk$set(out.extra='style="display:block; margin: auto"', fig.align="center", tidy=FALSE)
+```
+
+```{r setup1, include=FALSE}
+library(RhpcBLASctl); blas_set_num_threads(1)
+```
+
+The `qgam` R package offers methods for fitting additive quantile regression models based on splines, using the methods described in [Fasiolo et al., 2017](https://arxiv.org/abs/1707.03307). It is useful to use `qgam` together with `mgcViz`, which extends the basic visualizations provided by `mgcv`.
+
+The main fitting functions are:
+
+   - `qgam()` fits an additive quantile regression model to a single quantile. Very similar to `mgcv::gam()`. It returns an object of class `qgam`, which inherits from `mgcv::gamObject`.
+   - `mqgam()` fits the same additive quantile regression model to several quantiles. It is more efficient that calling `qgam()` several times, especially in terms of memory usage.
+   - `qgamV()` and `mqgamV()` are two convenient wrappers that fit quantile GAMs and return `gamViz` objects, for which `mgcViz` provides lots of visualizations.
+
+Basic example: income vs age
+=======================
+
+We load the data and fit a median model:
+```{r age1, message = F}
+library(mgcViz)
+library(SemiPar)
+data(age.income)
+age.income$income <- exp(age.income$log.income)
+
+fitQ <- qgamV(income ~ age, data = age.income, qu = 0.5)   
+```
+
+We predict and plot
+```{r age2, message = F}
+ft <-  predict(fitQ, se = TRUE)
+
+ord <- order(age.income$age)
+plot(age.income$age, age.income$income, xlab = "Age", 
+     ylab = "Income (CAD)", col = "grey")
+lines(age.income$age[ord], ft$fit[ord] , col = 1) 
+lines(age.income$age[ord], (ft$fit + 2 * ft$se.fit)[ord], col = 1, lty = 2)
+lines(age.income$age[ord], (ft$fit - 2 * ft$se.fit)[ord], col = 1, lty = 2)
+```
+
+We can look at p-values etc:
+```{r age3, message = F}
+summary(fitQ)
+```
+
+The relation between median `income` and `age` is clearly non-linear:
+```{r age4, message = F}
+fitQ <- qgamV(income ~ s(age), data = age.income, qu = 0.5)
+
+ft <-  predict(fitQ, se = TRUE)
+
+plot(age.income$age, age.income$income, xlab = "Age",
+     ylab = "Income (CAD)", col = "grey")
+lines(age.income$age[ord], ft$fit[ord], col = 2)
+lines(age.income$age[ord], (ft$fit + 2 * ft$se.fit)[ord], col = 2, lty = 2)
+lines(age.income$age[ord], (ft$fit - 2 * ft$se.fit)[ord], col = 2, lty = 2)
+```
+
+Now we fit multiple quantile at once, then we predict and plot the fit:
+```{r age5, message = F}
+fitQ <- mqgamV(income ~ s(age), data = age.income, qu = c(0.1, 0.25, 0.5, 0.75, 0.9))
+
+plot(age.income$age, age.income$income, xlab = "Age", ylab = "Income (CAD)", col = "grey")
+
+for(ii in 1:5){
+  ft <-  predict(fitQ[[ii]], se = TRUE)
+  lines(age.income$age[ord], ft$fit[ord], col = 1)
+}
+```
+
+Notice that the fitting quantiles **will** cross somewhere:
+```{r age6, message = F}
+newd <- data.frame(age = seq(22, 80, length.out = 1e3))
+plot(age.income$age, age.income$income, xlab = "Age",
+     ylab = "Income (CAD)", col = "grey", xlim = range(newd$age))
+for(ii in 1:5){
+  ft <-  predict(fitQ[[ii]], newdata = newd, se = TRUE)
+  lines(newd$age, ft$fit, col = 1)
+  rug(age.income$age)
+}
+```
+Typically they cross far from the data (when you extrapolate), but they can also cross when you intrapolate.
+
+The output of `mqgamV` is a list of QGAM models, you can handle each of them as usual:
+```{r age7, message = F}
+summary(fitQ[[1]])
+```
+```{r age8, message = F}
+summary(fitQ[[1]])
+```
+
+An additive example with four covariates
+=======================
+
+We simulate some data from the model:
+$$
+y \sim f_0(x_0)+f_1(x_1)+f_2(x_2)+f_3(x_3)+e,\;\;\; e \sim N(0, 2)
+$$
+by doing
+```{r fourD1, message = F}
+set.seed(2)
+dat <- gamSim(1, n=1000, dist="normal", scale=2)[c("y", "x0", "x1", "x2", "x3")]
+```
+We start by fitting a linear quantile model for the median:
+```{r fourD2, message = F}
+fit1 <- qgamV(y ~ x0 + x1 + x2 + x3, data=dat, qu = 0.5)
+
+print(plot(fit1, allTerms = TRUE), pages = 1)
+```
+We use `pages = 1` to plot on a single page, and `allTerms` to plot also the parametric effects (the plotting method used here plots only smooth or random effects by default).
+
+Should we use a smooth effect of `x0`? If the effect of `x0` was non-linear, we would expect that the number of observations falling below the fit would depart from 0.5, as we move along `x0`. A rudimental diagnostic plot is:
+```{r fourD3a, message = F}
+plot(dat$x0, sign(residuals(fit1)) + rnorm(nrow(dat), 0, 0.05), col = alpha(1, 0.4), pch = 16,
+     ylab = "Residuals sign", xlab = "x0")
+```
+But residual pattern is more visible in the following plot:
+```{r fourD3, message = F}
+check1D(fit1, "x0") + l_gridQCheck1D(qu = 0.5)
+```
+There is definitely a pattern here. An analogous plot along `x2` also shows a residual pattern, hence we consider the model:
+```{r fourD4, message = F}
+fit2 <- qgamV(y ~ s(x0) + x1 + s(x2) + x3, data=dat, qu = 0.5)
+
+check1D(fit2, "x0") + l_gridQCheck1D(qu = 0.5)
+```
+Looks much better, and leads to much lower AIC:
+```{r fourD4b, message = F}
+AIC(fit1) - AIC(fit2)
+```
+We can plot all the smooth effects by doing:
+```{r fourD5, message = F}
+print(plot(fit2), pages = 1)
+```
+To print only the second we do
+```{r fourD6, message = F}
+print(plot(fit2, select = 2), pages = 1)
+```
+
+```{r fourD7, message = F}
+print(plot(fit2, allTerms = TRUE), pages = 1)
+```
+Now we fit this model to multiple quantiles and plot the fitted effects:
+```{r fourD8, message = F}
+fit <- mqgamV(y ~ s(x0) + x1 + s(x2) + x3, data=dat,
+              qu = seq(0.1, 0.9, length.out = 5))
+
+print(plot(fit, allTerms = TRUE), pages = 1)
+```
+
+We can manipulate the five fitted quantile GAMs individually, for example
+```{r fourD9, message = F}
+print(plot(fit[[1]], allTerms = TRUE), pages = 1)
+```
+
+Random effect modelling: lexical decision task
+=======================
+
+In this experiment participants are presented with a sequence of stimuli and they have to decide, as
+quickly as possible, whether each stimulus is an existing words (eg. house) or a non-existing word
+(eg. pensour) by pressing one of two buttons. The variables we consider here are:
+
+   - `RT` logarithmically transformed reaction time.
+   - `NativeLanguage` a factor with levels English and Other.
+   - `Length` the word's length in letters.
+   - `Frequency` logarithmically transformed lemma frequencies as available in the CELEX lexical database.
+   - `Subject` the id of the individual subjects.
+   - `Trial` the rank of the trial in the experimental list.
+   - `Word` a factor with 79 words as levels.
+
+We might be interested in modeling the relation between the response time and length, frequency, native language and trial, and we might want to control for word and subject. We start by loading the data and fitting a simple QGAM model for the median:
+```{r lex1, message = F}
+library(languageR)
+data(lexdec)
+
+lexdec$RT0 <- exp( lexdec$RT ) # Should not need to use log-responses to normalize
+
+fit <- qgamV(RT0 ~ s(Trial) + NativeLanguage + s(Length, k = 5) + s(Frequency),
+            data = lexdec, qu = 0.5)
+
+print(plot(fit), pages = 1)
+```
+It is natural to ask ourselves whether we should control for `Subject` and for `Word`:
+```{r lex2, message = F}
+# check1D(fit, "Subject") would not work because it was not included in the original fit
+check1D(fit, lexdec$Subject) + l_gridQCheck1D(qu = 0.5)
+check1D(fit, lexdec$Word) + l_gridQCheck1D(qu = 0.5)
+```
+It seems so, hence we refit using two random effects:
+```{r lex3, message = F}
+fit2 <- qgamV(RT0 ~ s(Trial) + NativeLanguage + s(Length, k = 5) +
+                    s(Frequency) + s(Subject, bs = "re") + s(Word, bs = "re"),
+            data = lexdec, qu = 0.5)
+
+check1D(fit2, "Subject") + l_gridQCheck1D(qu = 0.5)
+check1D(fit2, "Word") + l_gridQCheck1D(qu = 0.5)
+
+AIC(fit) - AIC(fit2)
+```
+We achieve lower AIC and the residuals checks look better (especially the one for `Subject`).
+
+A potentially interesting question is then: is the effect of `Trial` different for native and non-native speakers? We can verify this by using a by-factor smooth:
+```{r lex4, message = F}
+fit3 <- qgamV(RT0 ~  s(Trial, by = NativeLanguage) + # <- by-factor smooth
+                    NativeLanguage + s(Length, k = 5) + s(Frequency) +
+                    s(Subject, bs = "re") + s(Word, bs = "re"),
+             data = lexdec, qu = 0.5)
+
+print(plot(fit3), pages = 1)
+```
+Can look directly at the difference between the by-factor smooths by doing:
+```{r lex5, message = F}
+s1 <- sm(fit3, 1)
+s2 <- sm(fit3, 2)
+plotDiff(s1, s2) + l_ciPoly() + l_fitLine()
+```
+There might be something there, but the difference is not very strong.
+
+Now that we have converges on a (hopefully reasonable) model, we can fit it to several quantiles:
+```{r lex6, message = F}
+fit5 <- mqgamV(RT0 ~ s(Trial, by = NativeLanguage) + NativeLanguage + s(Length, k = 5) +
+                + s(Frequency) + s(Subject, bs = "re") + s(Word, bs = "re"),
+                data = lexdec, qu = seq(0.2, 0.8, length.out = 5))
+
+print(plot(fit5, allTerms = TRUE), pages = 2, ask = FALSE)
+```
+The effects are fairly stable across quantiles, the effect of `Frequency` might be stronger for high quantiles.
+We can examine the fitted quantile models individually:
+```{r lex7, message = F}
+summary(fit5[[5]])
+```
+
+
+Setting the loss-smoothing parameter and checking convergence
+=======================
+
+Let's simulate some data:
+```{r check1, message = F}
+set.seed(5235)
+n <- 1000
+x <- seq(-3, 3, length.out = n)
+X <- cbind(1, x, x^2)
+beta <- c(0, 1, 1)
+f <- drop(X %*% beta)
+dat <- f + rgamma(n, 4, 1)
+dataf <- data.frame(cbind(dat, x))
+names(dataf) <- c("y", "x")
+```
+Assume that we want to estimate quantiles 0.05, 0.5 and 0.95:
+```{r check2, message = F}
+fit <- mqgamV(y ~ s(x), data = dataf, qu = c(0.05, 0.5, 0.95), err = 0.05)
+
+plot(x, dat, col = "grey", ylab = "y")
+lines(x, f + qgamma(0.95, 4, 1), lty = 2)
+lines(x, f + qgamma(0.5, 4, 1), lty = 2)
+lines(x, f + qgamma(0.05, 4, 1), lty = 2)
+lines(x, predict(fit[[1]]), col = 2)
+lines(x, predict(fit[[2]]), col = 2)
+lines(x, predict(fit[[3]]), col = 2)
+```
+
+Let's try to use several values of `err`:
+```{r check2b, message = F}
+lfit <- lapply(c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5),
+               function(.inp){
+                 mqgamV(y ~ s(x), data = dataf, qu = c(0.05, 0.5, 0.95), err = .inp, 
+                        aQgam = list(control = list("progress" = F)))
+               })
+
+plot(x, dat, col = "grey", ylab = "y", ylim = c(-2, 20))
+colss <- rainbow(length(lfit))
+for(ii in 1:length(lfit)){
+  lines(x, predict(lfit[[ii]][[1]]), col = colss[ii])
+  lines(x, predict(lfit[[ii]][[2]]), col = colss[ii])
+  lines(x, predict(lfit[[ii]][[3]]), col = colss[ii])
+}
+lines(x, f + qgamma(0.95, 4, 1), lty = 2)
+lines(x, f + qgamma(0.5, 4, 1), lty = 2)
+lines(x, f + qgamma(0.05, 4, 1), lty = 2)
+```
+The bias increases with `err`, and it is upward (downward) for high (low) quantiles. The median fit is not much affected by `err`. The bias really starts appearing for `err > 0.1`. Decreasing `err` tends to slow down computation:
+```{r check3, message = F}
+system.time( fit1 <- qgamV(y ~ s(x), data = dataf, qu = 0.95, err = 0.05, 
+                           aQgam = list(control = list("progress" = F))) )[[3]]
+system.time( fit2 <- qgamV(y ~ s(x), data = dataf, qu = 0.95, err = 0.001, 
+                           aQgam = list(control = list("progress" = F))) )[[3]]
+```
+Even worse, it can lead to numeric problems. Here we check that we have found the minimum of the calibration loss:
+```{r check4, message = F}
+check(fit1$calibr, sel = 2)
+check(fit2$calibr, sel = 2)
+```
+In the first case the loss looks smooth and with as single minimum, in the second case we have some instabilities. If the calibration loss looks like this, you generally have to increase `err`.
+
+We can use `check` to have an estimate of the bias and to have information regarding the convergence of the smoothing parameter estimation routine:
+```{r check5, message = F}
+check(fit1)
+```
+The second plot suggest that the actual bias is much lower than the bound `err = 0.05`. This is also supported by the first two lines of text, which say that 95.1\% of the residuals are negative, which is very close to the theoretical 95\%. The text says that full convergence in smoothing parameter estimation has been achieved, it is important to check this.
+
+In summary, practical experience suggests that:
+
+   - the default `err = 0.05` offer a good compromise between bias and stability;
+   - if the calibration loss plotted by `check(fit$learn)` is irregular, try to increase `err`;
+   - same if the text printed by `check(fit)` does not say that `full convergence` was achieved;
+   - you can estimate the bias using `check(fit)`;
+   - if you have to increase `err` to 0.2 or higher, there might be something wrong with your model;
+   - you might messages saying that `outer Newton did not converge fully` during estimation. This might
+     not be problematic as long as the calibration loss is smooth and `full convergence` was achieved;
+   - in preliminary studies do not decrease `err` too much, as it slows down computation;
+   - setting `err` too low is not a good idea: it is much better to have some bias than 
+     computational problems.
+     
+     
+Rainfall modelling in Parana state of Brasil
+=======================
+
+Here we are going to model daily rainfall (mm/day) from over 600 weather station in the Parana state of Brazil.
+The data comes comes from the `INLA` R package. The meaning of most variables should be evident.
+```{r parana1, message = F}
+library(mgcViz)
+load("data/parana.rda")
+
+plot(parana[parana$TIME==1, ]$LO, parana[parana$TIME==1, ]$LA, xlab = "LO", ylab = "LA") 
+```
+
+We fit a median quantile GAM with an isotropic effect for longitude and latitude, a cyclic effect for the time of the year and smooth effects for distance from the sea and elevation:
+```{r parana2, message = F}
+fit <- qgamV(PREC ~ s(LO, LA, k = 25) + s(seaDist) + s(TIME, bs = "cc") + s(EL), 
+             data = parana, 
+             qu = 0.5)
+
+print(plot(fit), pages = 1)
+```
+
+Here using an isotropic smooth form `LO` and `LA` makes sense, because the two units are similar. We can still
+check whether a tensor effect would lead to a different effect:
+```{r parana3, message = F}
+fit2 <- qgamV(PREC ~ te(LO, LA, k = c(5, 5)) + s(seaDist) + s(TIME, bs = "cc") + s(EL), 
+                       data = parana, 
+                       qu = 0.5)
+
+
+library(gridExtra)
+pl1 <- plot(sm(fit, 1)) + l_fitRaster() + l_fitContour() + theme(legend.position="bottom")
+pl2 <- plot(sm(fit2, 1)) + l_fitRaster() + l_fitContour() + theme(legend.position="bottom")
+
+grid.arrange(grobs = list(pl1$ggObj, pl2$ggObj), ncol = 2)
+```
+The two spatial effects are completely different! What happened is that the tensor product smooth got partially confounded with the distance from the sea effect. The `te` was more prone to doing this, because `seaDist` varies mostly along `LO` and it is mostly the marginal effect of `LO` that ended up offsetting the effect of `seaDist`.
+In general if your model include a bivariate effect `s(x, y)` or `te(x, y)`, you have to be very careful when including an extra effect $s(f(x, y))$ where some $f$ is some fixed function (`seaDist` here).
+
+We can of course fit this model to several quantiles:
+```{r parana4, message = F}
+fitM <- mqgamV(PREC ~ s(LO, LA, k = 25) + s(seaDist) + s(TIME, bs = "cc") + s(EL), 
+               data = parana, 
+               qu = seq(0.1, 0.9, length.out = 5), 
+               err = 0.1)
+
+plot(fitM, select = 1)
+print(plot(fitM, select = 2:4), pages = 1)
+```
+Notice that the spatial effect seems much stronger for high quantiles than for the low one. The same is true for distance from the sea and seasonality (`TIME`), while the effect of elevation is not significant from `qu = 0.9`.
+We can visualize the spatial effect in 3D as follows:
+```{r parana4b, message = F}
+plotRGL(sm(fitM[[5]], 1)) # This will not appear in the html file
+```
+
+We might also wonder whether the spatial effect changes with time. To verify this here we construct a tensor product smooth between the 2D thin-plate-spline spatial effect and the cyclical effect of time. We simplify the
+model by removing the effect of `seaDist`.
+```{r parana5, message = F}
+fit4 <- qgamV(PREC ~ te(LO, LA, TIME, d = c(2, 1), k = c(20, 10), bs = c("tp", "cc")) + s(EL), 
+              data = parana, 
+              qu = 0.9, 
+              err = 0.1)
+
+plotSlice(sm(fit4, 1), 
+          fix = list("TIME" = round(seq(1, 53, length.out = 6)))) + l_fitRaster()
+```
+
+You can plot any slice in 3D by doing:
+```{r parana6, message = F}
+plotRGL(sm(fit4, 1), fix = c("TIME" = 11)) # This will not appear in the html file
+```
+
+Dealing with heteroscedasticity
+=======================
+
+Let us simulate some data from an heteroscedastic model.
+```{r h1}
+set.seed(651)
+n <- 5000
+x <- seq(-4, 3, length.out = n)
+X <- cbind(1, x, x^2)
+beta <- c(0, 1, 1)
+sigma =  1.2 + sin(2*x)
+f <- drop(X %*% beta)
+dat <- f + rnorm(n, 0, sigma)
+dataf <- data.frame(cbind(dat, x))
+names(dataf) <- c("y", "x")
+
+qus <- seq(0.05, 0.95, length.out = 10)
+plot(x, dat, col = "grey", ylab = "y")
+for(iq in qus){ lines(x, qnorm(iq, f, sigma)) }
+```
+
+We now fit ten quantiles between 0.05 and 0.95, using a quantile GAM with scalar learning rate. 
+```{r h2}
+fit <- mqgamV(y~s(x, k = 20, bs = "cr"),
+              data = dataf,
+              qu = qus)
+
+qus <- seq(0.05, 0.95, length.out = 10)
+plot(x, dat, col = "grey", ylab = "y")
+for(ii in 1:length(qus)){
+ lines(x, qnorm(qus[ii], f, sigma), col = 2)
+ lines(x, predict(fit[[ii]]))
+}
+legend("top", c("truth", "fitted"), col = 2:1, lty = rep(1, 2))
+```
+
+The fitted quantiles are close to the true ones, but their credible intervals don't vary much with x. Indeed, let's look at intervals for quantile 0.95.
+```{r h3}
+plot(x, dat, col = "grey", ylab = "y")
+tmp <- predict(fit[[10]], se = TRUE)
+lines(x, tmp$fit)
+lines(x, tmp$fit + 3 * tmp$se.fit, col = 2)
+lines(x, tmp$fit - 3 * tmp$se.fit, col = 2)
+```
+
+We can do better by letting the learning rate vary with the covariate. In particular, we can use an additive model for quantile location and one for the scale or learning rate. 
+```{r h4}
+fit <- qgamV(list(y~s(x, k = 20, bs = "cr"), ~ s(x, k = 20, bs = "cr")),
+            data = dataf, qu = 0.95)
+
+plot(x, dat, col = "grey", ylab = "y")
+tmp <- predict(fit, se = TRUE)
+lines(x, tmp$fit[ , 1])
+lines(x, tmp$fit[ , 1] + 3 * tmp$se.fit[ , 1], col = 2)
+lines(x, tmp$fit[ , 1] - 3 * tmp$se.fit[ , 1], col = 2)
+```
+
+
+<!-- Adaptive smoothing: the motorcycle dataset -->
+<!-- ======================= -->
+
+<!-- Let's start with a simple example. Here we are fitting a regression model with an adaptive spline basis to quantile 0.8 of the motorcycle dataset. -->
+<!-- ```{r 1, message = F} -->
+<!-- library(qgam); library(MASS) -->
+<!-- if( suppressWarnings(require(RhpcBLASctl)) ){ blas_set_num_threads(1) } # Optional -->
+
+<!-- set.seed(6436) -->
+<!-- fit <- qgam(accel~s(times, k=20, bs="ad"),  -->
+<!--             data = mcycle,  -->
+<!--             qu = 0.8,  -->
+<!--             err = 0.1, -->
+<!--             control = list("tol" = 0.01)) # <- sloppy tolerance to speed-up calibration  -->
+
+<!-- # Plot the fit -->
+<!-- xSeq <- data.frame(cbind("accel" = rep(0, 1e3), "times" = seq(2, 58, length.out = 1e3))) -->
+<!-- pred <- predict(fit, newdata = xSeq, se=TRUE) -->
+<!-- plot(mcycle$times, mcycle$accel, xlab = "Times", ylab = "Acceleration", ylim = c(-150, 80)) -->
+<!-- lines(xSeq$times, pred$fit, lwd = 1) -->
+<!-- lines(xSeq$times, pred$fit + 2*pred$se.fit, lwd = 1, col = 2) -->
+<!-- lines(xSeq$times, pred$fit - 2*pred$se.fit, lwd = 1, col = 2)    -->
+<!-- ``` -->
+<!-- `qgam` automatically calls `tuneLearnFast` to select the learning rate. The results of the calibrations are stored in `fit$calibr`. We can check whether the optimization succeded as follows: -->
+<!-- ```{r 2} -->
+<!-- check(fit$calibr, 2) -->
+<!-- ``` -->
+<!-- The plot suggest that the calibration criterion has a single minimum, and that the optimizer has converged to its neighbourhood. Alternatively, we could have selected the learning rate by evaluating the loss function on a grid. -->
+<!-- ```{r 3, message = F} -->
+<!-- set.seed(6436) -->
+<!-- cal <- tuneLearn(accel~s(times, k=20, bs="ad"),  -->
+<!--                  data = mcycle,  -->
+<!--                  qu = 0.8, -->
+<!--                  err = 0.1, -->
+<!--                  lsig = seq(1, 3, length.out = 20),  -->
+<!--                  control = list("progress" = "none")) #<- sequence of values for learning rate -->
+
+<!-- check(cal) -->
+<!-- ``` -->
+<!-- Here the generic `check` function produces a different output. The first plot is the calibration criterion as a function of $log(\sigma)$, which should look fairly smooth. The second plot shows how the effective degrees of freedom (EDF) vary with $log(\sigma)$. Notice that here we are using an adaptive smoother, which includes five smoothing parameters.  -->
+
+<!-- We might want to fit several quantiles at once. This can be done with `mqgam`. -->
+<!-- ```{r 4} -->
+<!-- quSeq <- c(0.2, 0.4, 0.6, 0.8) -->
+<!-- set.seed(6436) -->
+<!-- fit <- mqgam(accel~s(times, k=20, bs="ad"),  -->
+<!--              data = mcycle,  -->
+<!--              err = 0.1, -->
+<!--              qu = quSeq,  -->
+<!--              control = list("tol" = 0.01)) # <- sloppy tolerance to speed-up calibration  -->
+<!-- ``` -->
+
+<!-- To save memory `mqgam` does not return one `mgcv::gamObject` for each quantile, but it avoids storing some redundant data (such as several copies of the design matrix). The output of `mqgam` can be manipulated using the `qdo` function. -->
+
+<!-- ```{r 5} -->
+<!-- # Plot the data -->
+<!-- xSeq <- data.frame(cbind("accel" = rep(0, 1e3), "times" = seq(2, 58, length.out = 1e3))) -->
+<!-- plot(mcycle$times, mcycle$accel, xlab = "Times", ylab = "Acceleration", ylim = c(-150, 80)) -->
+
+<!-- # Predict each quantile curve and plot -->
+<!-- for(iq in quSeq){ -->
+<!--   pred <- qdo(fit, iq, predict, newdata = xSeq) -->
+<!--   lines(xSeq$times, pred, col = 2) -->
+<!-- } -->
+<!-- ``` -->
+
+<!-- Using `qdo` we can print out the summary for each quantile, for instance:  -->
+<!-- ```{r 6} -->
+<!-- # Summary for quantile 0.4 -->
+<!-- qdo(fit, qu = 0.4, summary) -->
+<!-- ``` -->
+<!-- Notice that here the generic function `summary` is calling `summary.gam`, because `summary.qgam` has not been implemented yet. Hence one cannot quite rely on the p-value provided by this function, because their are calculated using result that apply to parametric, not quantile, regression. -->
+
+<!-- Dealing with heteroscedasticity -->
+<!-- ======================= -->
+
+<!-- Let us simulate some data from an heteroscedastic model. -->
+<!-- ```{r h1} -->
+<!-- set.seed(651) -->
+<!-- n <- 5000 -->
+<!-- x <- seq(-4, 3, length.out = n) -->
+<!-- X <- cbind(1, x, x^2) -->
+<!-- beta <- c(0, 1, 1) -->
+<!-- sigma =  1.2 + sin(2*x) -->
+<!-- f <- drop(X %*% beta) -->
+<!-- dat <- f + rnorm(n, 0, sigma) -->
+<!-- dataf <- data.frame(cbind(dat, x)) -->
+<!-- names(dataf) <- c("y", "x") -->
+
+<!-- qus <- seq(0.05, 0.95, length.out = 10) -->
+<!-- plot(x, dat, col = "grey", ylab = "y") -->
+<!-- for(iq in qus){ lines(x, qnorm(iq, f, sigma)) } -->
+<!-- ``` -->
+
+<!-- We now fit ten quantiles between 0.05 and 0.95, using a quantile GAM with scalar learning rate. To speed up things I've pre-computed the learning rate. Just comment out the line `lsig = lsig,` if you want to re-computed it. -->
+<!-- ```{r h2} -->
+<!-- lsig <- c(-0.96, -0.83, -0.69, -0.63, -0.76, -0.76, -0.89, -0.85, -0.99, -1.06) -->
+<!-- fit <- mqgam(y~s(x, k = 30, bs = "cr"),  -->
+<!--              data = dataf, -->
+<!--              lsig = lsig, -->
+<!--              qu = qus, err = 0.05) -->
+
+<!-- qus <- seq(0.05, 0.95, length.out = 10) -->
+<!-- plot(x, dat, col = "grey", ylab = "y") -->
+<!-- for(iq in qus){  -->
+<!--  lines(x, qnorm(iq, f, sigma), col = 2) -->
+<!--  lines(x, qdo(fit, iq, predict)) -->
+<!-- } -->
+<!-- legend("top", c("truth", "fitted"), col = 2:1, lty = rep(1, 2)) -->
+<!-- ``` -->
+
+<!-- The fitted quantiles are close to the true ones, but their credible intervals don't vary much with x. Indeed, let's look at intervals for quantile 0.95. -->
+<!-- ```{r h3} -->
+<!-- plot(x, dat, col = "grey", ylab = "y") -->
+<!-- tmp <- qdo(fit, 0.95, predict, se = TRUE) -->
+<!-- lines(x, tmp$fit) -->
+<!-- lines(x, tmp$fit + 3 * tmp$se.fit, col = 2) -->
+<!-- lines(x, tmp$fit - 3 * tmp$se.fit, col = 2) -->
+<!-- ``` -->
+
+<!-- We can do better by letting the learning rate vary with the covariate. In particular, we can use an additive model for quantile location and one for the scale or learning rate. Here I am fixing the intercept of  -->
+<!-- the additive model for the learning rate, in order to avoid calibrating it. Just comment out `lsig=-1.16` if -->
+<!-- you want to re-estimate it. -->
+<!-- ```{r h4} -->
+<!-- fit <- qgam(list(y~s(x, k = 30, bs = "cr"), ~ s(x, k = 30, bs = "cr")),  -->
+<!--             data = dataf, qu = 0.95, err = 0.05, lsig = -1.16) -->
+
+<!-- plot(x, dat, col = "grey", ylab = "y") -->
+<!-- tmp <- predict(fit, se = TRUE) -->
+<!-- lines(x, tmp$fit[ , 1]) -->
+<!-- lines(x, tmp$fit[ , 1] + 3 * tmp$se.fit[ , 1], col = 2) -->
+<!-- lines(x, tmp$fit[ , 1] - 3 * tmp$se.fit[ , 1], col = 2) -->
+<!-- ``` -->
+
+<!-- Now the credible intervals correctly represent the underlying uncertainty.  -->
+
+<!-- Model checking -->
+<!-- ======================= -->
+
+<!-- The `qgam` package provides some functions that can be useful for model checking. In particular, we have: -->
+
+<!--    - `cqcheck` if we are fitting, say, quantile 0.2 we expect roughly $20\%$ of the observations to fall below the fitted quantile. This function produces some plots to verify this. -->
+<!--    - `cqcheckI` interactive version of `cqcheckI`. Implemented using the `shiny` package. Not demonstrated here,  -->
+<!--                 but see `?cqcheckI`. -->
+<!--    - `check.qgam` provides some diagnostics regarding the optimization. Mainly based to `gam.check`. -->
+<!--    - `check.learn` diagnostic checks to verify that the learning rate selection went well. It can be used -->
+<!--                    on the output of `tuneLearn`. -->
+<!--    - `check.tuneLearn` similar to `check.learn`, but it can be used on the output of `tuneLearn` or on the                              `$calibr` slot of a `qgam` object. -->
+
+<!-- We start by illustrating the `cqcheck` function. In particular, let us consider the additive model: -->
+<!-- $$ -->
+<!-- y \sim x+x^2+z+xz/2+e,\;\;\; e \sim N(0, 1) -->
+<!-- $$ -->
+<!-- We start by simulating some data from it. -->
+<!-- ```{r c1} -->
+<!-- library(qgam) -->
+<!-- set.seed(15560) -->
+<!-- n <- 1000 -->
+<!-- x <- rnorm(n, 0, 1); z <- rnorm(n) -->
+<!-- X <- cbind(1, x, x^2, z, x*z) -->
+<!-- beta <- c(0, 1, 1, 1, 0.5) -->
+<!-- y <- drop(X %*% beta) + rnorm(n)  -->
+<!-- dataf <- data.frame(cbind(y, x, z)) -->
+<!-- names(dataf) <- c("y", "x", "z") -->
+<!-- ``` -->
+
+<!-- We fit a linear model to the median and we use `cqcheck` produce a diagnostic plot.  -->
+<!-- ```{r c2} -->
+<!-- qu <- 0.5 -->
+<!-- fit <- qgam(y~x, qu = qu, data = dataf) -->
+<!-- cqcheck(obj = fit, v = c("x"), X = dataf, y = y)  -->
+<!-- ``` -->
+
+<!-- The `cqcheck` function takes a `qgam` object as input and it predicts the conditional quantile using the data in `X`. Then it bins the responses `y` using the corresponding values of `v` and it calculates, for every bin, what fraction of responses falls below the fitted quantile. Given that we are fitting the median, we would expect that around $50\%$ of the point falls below the fit. But, as the plot shows, this fraction varies widely along `x`. There is clearly a non-linear relation between the quantile location and `x`, hence we add a smooth for `x`. -->
+<!-- ```{r c3, message = F} -->
+<!-- fit <- qgam(y~s(x), qu = qu, data = dataf) -->
+<!-- cqcheck(obj = fit, v = c("x"), X = dataf, y = y) -->
+<!-- ``` -->
+
+<!-- The deviations from the theoretical quantile ($0.5$) are much reduced, but let's look across both `x` and `z`.  -->
+<!-- ```{r c4, message = F} -->
+<!-- cqcheck(obj = fit, v = c("x", "z"), X = dataf, y = y, nbin = c(5, 5)) -->
+<!-- ``` -->
+
+<!-- This plot uses binning as before, if a bin is red (green) this means that the fraction of responses falling below the fit is smaller (larger) than 0.5. Bright colours means that the deviation is statistically significant. As we move along `z` (`x2` in the plot) the colour changes from green to red, so it make sense drawing a marginal plot for `z`: -->
+<!-- ```{r c5, message = F} -->
+<!-- cqcheck(obj = fit, v = c("z"), X = dataf, y = y, nbin = c(10)) -->
+<!-- ``` -->
+
+<!-- We are clearly missing an effect here. Given that effect looks pretty linear, we simply add a parametric term to the fit, which seems to solve the problem: -->
+<!-- ```{r c6, message = F} -->
+<!-- fit <- qgam(y~s(x)+z, qu = qu, data = dataf) -->
+<!-- cqcheck(obj = fit, v = c("z")) -->
+<!-- ``` -->
+
+<!-- But if we look again across both `x` and `z` we see that green prevails on the top-left to bottom-right -->
+<!-- diagonal, while the other diagonal is mainly red. -->
+<!-- ```{r c7, message = F} -->
+<!-- cqcheck(obj = fit, v = c("x", "z"), nbin = c(5, 5)) -->
+<!-- ``` -->
+
+<!-- This suggests that adding an interaction between `x` and `z` might be a good idea. Indeed, now `cqcheck` does not signal any problem: -->
+<!-- ```{r c8, message = F} -->
+<!-- fit <- qgam(y~s(x)+z+I(x*z), qu = qu, data = dataf) -->
+<!-- cqcheck(obj = fit, v = c("x", "z"), nbin = c(5, 5)) -->
+<!-- ``` -->
+
+<!-- Now that we are fairly satisfied with the model structure, we can, for instance, fit several quantiles -->
+<!-- by doing:  -->
+<!-- ```{r c9, message = F} -->
+<!-- fit <- mqgam(y~s(x)+z+I(x*z), qu = c(0.2, 0.4, 0.6, 0.8), data = dataf) -->
+<!-- ``` -->
+
+<!-- We can then check whether the learning rate was selected correctly. Recall that the `qgam` function calls internally `tuneLearnFast`, hence we can look at how the calibration went by doing: -->
+<!-- ```{r c10, message = F} -->
+<!-- check.learnFast(fit$calibr, 2:5) -->
+<!-- ``` -->
+
+<!-- For each quantile, the calibration loss seems to have a unique minimum, which is what one would hope. Objects of class `qgam` can also be checked using the generic function `check`, which defaults to `check.qgam`. To use this function on the output of `mqgam`, we must use the `qdo` function: -->
+<!-- ```{r c11, message = F} -->
+<!-- qdo(fit, 0.2, check) -->
+<!-- ``` -->
+
+<!-- The printed output gives some information about the optimizer used to estimate the smoothing parameters, for fixed learning rate. See `?check.qgam` for more information. The plot has been obtained using `cqcheck`, where each data point has been binned using the fitted values. On the right side of the plot there seems to be some large deviations, but the rug shows that there are very few data points there.   -->
+
+<!-- Application to probabilistic electricity load forecasting -->
+<!-- ======================= -->
+
+<!-- Here we consider a UK electricity demand dataset, taken from the national grid [website](http://www2.nationalgrid.com/). The dataset covers the period January 2011 to June 2016 and it contains the following variables: -->
+
+<!--    - `NetDemand` net electricity demand between 11:30am and 12am. -->
+<!--    - `wM` instantaneous temperature, averaged over several English cities. -->
+<!--    - `wM_s95` exponential smooth of `wM`, that is `wM_s95[i] = a*wM[i] + (1-a)*wM_s95[i]` with `a=0.95`. -->
+<!--    - `Posan` periodic index in `[0, 1]` indicating the position along the year. -->
+<!--    - `Dow` factor variable indicating the day of the week. -->
+<!--    - `Trend` progressive counter, useful for defining the long term trend. -->
+<!--    - `NetDemand.48` lagged version of `NetDemand`, that is `NetDemand.48[i] = NetDemand[i-2]`. -->
+<!--    - `Holy` binary variable indicating holidays. -->
+<!--    - `Year` and `Date` should obvious, and partially redundant. -->
+
+<!-- See [Fasiolo et al., 2016](https://arxiv.org/abs/1707.03307) for more details. This is how the demand over the period looks like: -->
+<!-- ```{r edf1} -->
+<!-- data("UKload") -->
+<!-- tmpx <- seq(UKload$Year[1], tail(UKload$Year, 1), length.out = nrow(UKload))  -->
+<!-- plot(tmpx, UKload$NetDemand, type = 'l', xlab = 'Year', ylab = 'Load') -->
+<!-- ``` -->
+
+<!-- To estimate the median demand, we consider the following model -->
+<!-- ```{r edf2} -->
+<!-- qu <- 0.5 -->
+<!-- form <- NetDemand~s(wM,k=20,bs='cr') + s(wM_s95,k=20,bs='cr') +  -->
+<!--         s(Posan,bs='ad',k=30,xt=list("bs"="cc")) + Dow + s(Trend,k=4) + NetDemand.48 + Holy -->
+<!-- ``` -->
+
+<!-- Notice that we use very few knots for the long term trend, this is because we don't want to end up interpolating the data. We use an adaptive cyclic smooth for `Posan`, we'll explain later why adaptivity is needed here.  -->
+
+<!-- Now we tune the learning rate on a grid, on two cores. As the first plot shows, the calibrations loss is minimized at $\log (\sigma)\approx 6$, the second plot shows how the effective degrees of freedom of each smooth term changes with $\log (\sigma)$. -->
+<!-- ```{r edf3, message=FALSE} -->
+<!-- set.seed(41241) -->
+<!-- sigSeq <- seq(4, 8, length.out = 16) -->
+<!-- closs <- tuneLearn(form = form, data = UKload,  -->
+<!--                    lsig = sigSeq, qu = qu, control = list("K" = 20),  -->
+<!--                    multicore = TRUE, ncores = 2, err = 0.1) -->
+
+<!-- check(closs) -->
+<!-- ``` -->
+
+<!-- Now let's fit the model with the learning rate corresponding to the lowest loss and let's look at the resulting smooth effects.  -->
+<!-- ```{r edf4} -->
+<!-- lsig <- closs$lsig -->
+<!-- fit <- qgam(form = form, data = UKload, lsig = lsig, qu = qu, err = 0.1) -->
+<!-- plot(fit, scale = F, page = 1) -->
+<!-- ``` -->
+
+<!-- The effect of temperature (`wM`) is minimized around 18 degrees, which is reasonable. The cyclic effect of `Posan` has a very sharp drop corresponding to the winter holidays, we used an adaptive smooth in order to have more flexibility during this period. Now we can have a look as some diagnostic plot: -->
+<!-- ```{r edf5} -->
+<!-- par(mfrow = c(2, 2)) -->
+<!-- cqcheck(fit, v = c("wM"), main = "wM") -->
+<!-- cqcheck(fit, v = c("wM_s95"), main = "wM_s95") -->
+<!-- cqcheck(fit, v = c("Posan"), main = "Posan") -->
+<!-- cqcheck(fit, v = c("Trend"), main = "Trend", xaxt='n') -->
+<!-- axis(1, at = UKload$Trend[c(1, 500, 1000, 1500, 2000)],  -->
+<!--              UKload$Year[c(1, 500, 1000, 1500, 2000)] ) -->
+<!-- ``` -->
+
+<!-- The plots for `wM_s95` and `Posan` don't show any important deviation from 0.5, the target quantile. Along `wM` we see a large deviation, but we have essentially no data for very high temperatures. If we look at deviations along the `Trend` variable, which is just a time counter, we see several important deviations. It would be interesting verifying why these occur (we have no answer currently). -->
+
+<!-- Finally, recall that we can produce 2D versions of these diagnostic plots, for instance: -->
+<!-- ```{r edf6} -->
+<!-- par(mfrow = c(1, 1)) -->
+<!-- cqcheck(fit, v = c("wM", "Posan"), scatter = T) -->
+<!-- ``` -->
+
+
+References
+=======================
+  
+  * Fasiolo, M., Goude, Y., Nedellec, R. and Wood, S. N. (2017). Fast calibrated additive quantile regression. Available at https://arxiv.org/abs/1707.03307
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
